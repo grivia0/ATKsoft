@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "atksoft"
+version = "0.1.0"
+description = "Open control panel for Attack Shark mice (PAW3311 sensor, 2.4 GHz dongle)"
+readme = "README.md"
+requires-python = ">=3.10"
+# The CLI plus the protocol/session layers are pure stdlib; only the GUI needs Qt.
+dependencies = []
+
+[project.optional-dependencies]
+gui = ["PyQt6>=6.5"]
+
+[project.scripts]
+atksoft = "atksoft.cli:main"
+
+[tool.setuptools]
+packages = ["atksoft"]
+
+[tool.setuptools.package-data]
+atksoft = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

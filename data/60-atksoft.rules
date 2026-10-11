@@ -1,0 +1,22 @@
+# ATKsoft -- give the desktop user access to the Attack Shark X6's hidraw nodes.
+#
+# The mouse's configuration interface is the vendor HID collection that
+# exposes feature reports 0x04 (DPI), 0x05 (lighting), 0x06 (polling rate),
+# 0x09 (macro pages) and 0xA0 (read grant).  It sits behind one of the
+# dongle's four HID interfaces (/dev/hidraw2 on this machine, but the node
+# number is not stable across replugs) and every node is root-only
+# (crw------- root root) by default, so reads and writes fail with EACCES
+# until this rule is installed and the dongle has been replugged.
+#
+# 1d57:fa60 -- Attack Shark X6 / "Xenta 2.4G Wireless Device" dongle.
+# 1d57:fa55 -- Attack Shark X11 wired cable: the same vendor collection
+#              answers on it, so it is covered too (harmless if unused).
+#
+# TAG+="uaccess" hands the nodes to the user logged in on the seat;
+# MODE="0660" keeps root and the owning group able to reach them as well.
+# If 'uaccess' does not apply on your system (no systemd-logind seat),
+# add an explicit owner, e.g.:
+#     SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1d57", ATTRS{idProduct}=="fa60", MODE="0660", OWNER="youruser"
+
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1d57", ATTRS{idProduct}=="fa60", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1d57", ATTRS{idProduct}=="fa55", MODE="0660", TAG+="uaccess"
