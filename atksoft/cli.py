@@ -9,6 +9,7 @@ Examples::
     atksoft battery
     atksoft watch                       # stream events while you click things
     atksoft raw 0x06                    # one feature report, verbatim
+    atksoft gui                         # the same reads and writes with buttons
     sudo atksoft install-udev           # stop having to use sudo
 
 The layers, top to bottom::
@@ -645,6 +646,28 @@ def udev_status(args, source: Path, dest: Path) -> int:
     return 0 if (installed and openable) else 1
 
 
+def cmd_gui(args) -> int:
+    """Open the PyQt6 control panel (``atksoft gui``).
+
+    Qt is imported inside the command rather than at the top of the module: the
+    CLI must keep working on a box with no Qt at all, and the error below is the
+    only place that should ever mention the extra.
+    """
+    try:
+        from . import gui
+    except ImportError as error:
+        # ModuleNotFoundError for the common case, ImportError when PyQt6 is
+        # present but its shared libraries are not.
+        raise SessionError(f"{error} (install it with: pip install 'atksoft[gui]')") \
+            from None
+    argv = ["--profile", str(args.profile)]
+    if args.node:
+        argv += ["--node", args.node]
+    if args.no_connect:
+        argv.append("--no-connect")
+    return gui.main(argv)
+
+
 def cmd_install_udev(args) -> int:
     """Install ``data/60-atksoft.rules`` into /etc/udev/rules.d and reload it."""
     source = Path(args.rules) if args.rules else RULES_SOURCE
@@ -732,6 +755,7 @@ examples:
   atksoft battery
   atksoft watch --seconds 30
   atksoft raw 0x0b
+  atksoft gui --profile 2
 """)
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
@@ -864,6 +888,13 @@ def _add_utility_commands(sub, common) -> None:
     p_raw.add_argument("--param", type=int, metavar="N",
                        help="override the 0xA0 parameter byte (profile or macro id)")
     p_raw.set_defaults(func=cmd_raw)
+
+    # -- gui -------------------------------------------------------------
+    p_gui = sub.add_parser("gui", parents=[common],
+                           help="open the PyQt6 control panel (needs the [gui] extra)")
+    p_gui.add_argument("--no-connect", action="store_true",
+                       help="open the window without reading the mouse first")
+    p_gui.set_defaults(func=cmd_gui)
 
     # -- install-udev ----------------------------------------------------
     p_udev = sub.add_parser("install-udev", parents=[common],

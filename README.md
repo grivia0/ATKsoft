@@ -8,7 +8,8 @@ The USB-C cable mode (`1d57:fa55`) is wired up as well, but a dongle is the
 only thing that has been probed so far.
 
 * `atksoft` -- the command line tool (pure stdlib: no hidapi, no libusb).
-* `atksoft.gui` -- a PyQt6 front end (planned; see *Status*).
+* `atksoft.gui` -- the same reads and writes as a PyQt6 control panel
+  (`pip install -e '.[gui]'`).
 
 ## Status
 
@@ -18,8 +19,8 @@ only thing that has been probed so far.
 | `protocol.py` (frame codecs, events, checksums) | done |
 | `session.py` (discovery, read/write, apply) | done, unit-tested without hardware |
 | `cli.py` | done |
+| `gui.py` (PyQt6) | done, unit-tested headless |
 | End-to-end read/write on hardware | **needs the udev rule installed** (below) |
-| `gui.py` (PyQt6) | not written yet |
 
 Report 0x09 (macros) reads with an off-by-a-few checksum and its writer and
 reader disagree with each other, so macro **writes** are deliberately absent
@@ -65,7 +66,7 @@ Run it straight from a checkout:
 ```sh
 python3 -m atksoft list            # no installation needed
 pip install -e .                   # or install the `atksoft` command
-pip install -e '.[gui]'            # once the GUI lands
+pip install -e '.[gui]'            # the PyQt6 control panel as well
 ```
 
 ## Commands
@@ -83,6 +84,7 @@ atksoft battery                         battery percentage
 atksoft watch [--seconds 30]            stream events (battery, DPI cycle, writes)
 atksoft raw 0x0b                        read one report verbatim
 atksoft raw 0x06 --write '01 01 ff 00'  write one report verbatim
+atksoft gui [--profile 2]               the same settings with buttons
 atksoft install-udev [--print|--status] install the udev rule
 ```
 
@@ -109,6 +111,38 @@ format.  Report `0x04` is built as 56 bytes but the descriptor declares a
 zero-pads on the way in, which is why the DPI checksum lands at `[50:52]` on
 the wire whereas the vendor buffer has it at `[54:56]`.
 
+## The GUI
+
+```sh
+atksoft gui                         # or: atksoft-gui, or python3 -m atksoft.gui
+atksoft gui --node /dev/hidraw2     # pin the node instead of searching
+atksoft gui --profile 2             # edit profile 2's DPI and buttons
+atksoft gui --no-connect            # open the window, connect by hand
+```
+
+Six tabs, one per thing the dongle exposes:
+
+| Tab | Report | What it edits |
+| --- | --- | --- |
+| DPI | `0x04` | eight stages (on/off, DPI, colour), the start-up stage, lift-off distance, angle snap, motion sync, ripple control |
+| Lighting | `0x05` | LED mode and colour, brightness, speed, light-off and deep-sleep timers, switch debounce |
+| Buttons | `0x08` | the 18 slots, written as the same specs `atksoft set buttons --set` takes (`disabled`, `fire`, `key:shift+a`, `macro:2`) |
+| Device | `0x0C`/`0x06` | live profile and profile count, polling rate, plus the node's descriptor table and the battery |
+| Advanced | any | read and write one report verbatim, for the reports nobody has decoded yet (`0x07`, `0x09`, `0x0A`) |
+| Monitor | -- | the interrupt-IN event stream, the cheapest liveness check there is |
+
+The window obeys the same rules as the CLI, and shows the work: it holds one
+session open, runs every read and write on a worker thread so the window never
+freezes mid-grant, and *Save changes* only lights up once a tab is actually
+dirty.  Saving sends the whole frame and then reads it back, so the numbers on
+screen afterwards are what the mouse stored -- the PAW3311 quietly snaps DPI to
+its own table, for instance, and the tab says so before you save.
+
+Macro writes, wake-up mode (`0x07`) and the profile blob (`0x0A`) are
+deliberately absent: their layouts are not understood well enough to write
+safely.  The Advanced tab can read all three.
+
+
 ## Layout
 
 ```
@@ -119,6 +153,7 @@ atksoft/hidraw.py     HIDIOCGFEATURE/HIDIOCSFEATURE ioctls, /sys report-descript
 atksoft/session.py    MouseSession: find the config node, read one report, write one
                       back, read_settings/apply, events/battery/watch
 atksoft/cli.py        argparse front end and output formatting
+atksoft/gui.py        PyQt6 control panel: worker thread, one tab per report
 atksoft/keynames.py   HID keyboard usage id <-> name, for button bindings
 data/60-atksoft.rules udev rule: 0660 + uaccess for this vendor's mouse
 tests/                pytest suite (no hardware required)
@@ -131,5 +166,12 @@ python3 -m pytest
 ```
 
 The suite fakes the HID layer (`set_feature`/`get_feature`/`read`), so it covers
-the grant handshake, the trim/pad rule, read-modify-write diffing and the CLI
-without a mouse plugged in.
+the grant handshake, the trim/pad rule, read-modify-write diffing, the CLI and
+the GUI without a mouse plugged in.
+
+The GUI tests need PyQt6 and run on Qt's ``offscreen`` platform plugin (they set
+``QT_QPA_PLATFORM`` themselves), so they work over ssh and in CI.  The window
+they drive is wired to the same ``FakeDevice``: they check that loading a tab and
+saving it again writes nothing at all, that one edited DPI stage produces one
+frame with every other byte exactly as it was read, and that a binding
+expression the CLI would reject never reaches the wire.
