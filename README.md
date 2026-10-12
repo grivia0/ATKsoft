@@ -623,6 +623,7 @@ and not a build.
 ## Tests
 
 ```sh
+python3 -m pip install -e '.[dev]'    # pytest, plus PyQt6 for the GUI tests
 python3 -m pytest
 ```
 
