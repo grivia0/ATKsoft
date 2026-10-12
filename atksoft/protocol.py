@@ -103,17 +103,34 @@ BYTE_BY_POLL = {hz: b for b, hz in POLL_BY_BYTE.items()}
 
 # --------------------------------------------------------------- lighting
 
-# High nibble of byte[3]; the low nibble is reserved.
+# High nibble of byte[3]; the low nibble is reserved.  The two ``*-dpi`` modes
+# belong to report 0x04: they light the LED in the *active DPI stage's* colour
+# (``DPI_COLOR_OFFSET + 3 * stage``) instead of the single colour below, which is
+# the only way the eight stage colours stay on the LED rather than just blinking
+# past it.  Both of the vendor drivers for this family name them
+# StaticDpi/BreathingDpi and put them at 0x05/0x06, where this table used to say
+# "ripple" and "reactive" -- the second of which also collided with the
+# unrelated ripple-control flag in report 0x04.
 LIGHT_MODES = {
-    "off": 0x00,
-    "steady": 0x01,
-    "breathing": 0x02,
-    "neon": 0x03,
-    "rainbow": 0x04,
-    "ripple": 0x05,
-    "reactive": 0x06,
+    "off": 0x00,             # vendor: Off
+    "steady": 0x01,          # vendor: Static
+    "breathing": 0x02,       # vendor: Breathing
+    "neon": 0x03,            # vendor: Neon
+    "rainbow": 0x04,         # vendor: ColorBreathing
+    "steady-dpi": 0x05,      # vendor: StaticDpi, lit in the active stage's colour
+    "breathing-dpi": 0x06,   # vendor: BreathingDpi, ditto
 }
 MODE_BY_VALUE = {v: k for k, v in LIGHT_MODES.items()}
+
+#: The LED modes that colour the LED from the active DPI stage instead of
+#: ``LightingSettings.rgb``.  In every other mode the LED keeps its own colour
+#: and a DPI change only plays report 0x04's one-shot confirmation animation
+#: (byte 49; see the ``DPI_INDICATOR_*`` values below), so editing a stage colour
+#: there looks like it did nothing.
+DPI_LIGHT_MODES = frozenset(("steady-dpi", "breathing-dpi"))
+
+#: ``DPI_LIGHT_MODES`` as prose, for help text and tooltips.
+DPI_LIGHT_MODES_TEXT = " or ".join(sorted(DPI_LIGHT_MODES))
 
 BRIGHTNESS_MIN, BRIGHTNESS_MAX = 1, 8
 LED_SPEED_MIN, LED_SPEED_MAX = 1, 5     # stored as (6 - speed) so 5 is fastest
@@ -389,10 +406,35 @@ DPI_COLOR_OFFSET = 25
 DPI_INDICATOR_OFFSET = 49
 DPI_CHECKSUM_OFFSET = 50
 
+# Byte 49 is the vendor's "DPI Active Indicator" -- its own comment on this byte,
+# and the name of the ``dpiIndicationType`` field its reply parser reads.  It is
+# not a stage number: it selects the *one-shot* animation the firmware plays when
+# it accepts the report, and only three values do anything (the rest are
+# ignored).  The animation borrows the LED for a moment and then hands it back to
+# report 0x05, which owns the steady colour -- so a DPI write never moves the LED
+# on its own, and ``session.MouseSession.apply`` re-sends report 0x05 after every
+# DPI write for exactly that reason.
+DPI_INDICATOR_NONE = 0      #: no animation: report 0x05's colour shows at once
+DPI_INDICATOR_BLINK = 1     #: three quick blinks
+DPI_INDICATOR_FLASH = 2     #: solid for roughly three seconds
+
+#: Byte 49 value -> what the mouse does with it (the vendor's tool stores 2).
+DPI_INDICATOR_EFFECTS = {
+    DPI_INDICATOR_NONE: "no animation",
+    DPI_INDICATOR_BLINK: "three quick blinks",
+    DPI_INDICATOR_FLASH: "solid for about three seconds",
+}
+
+
+def dpi_indicator_effect(value: int) -> str:
+    """What the mouse does with ``value`` in report 0x04's byte 49."""
+    return DPI_INDICATOR_EFFECTS.get(int(value), "ignored by the firmware")
+
 # Byte-for-byte copy of the vendor's own DPI default report (the constants its
 # builder's constructor writes).  Its checksum 0x0f68 validates, its stages
-# decode to [800, 1600, 2400, 3200, 5000, 22000, 0, 0] and the colours match
-# DPI_STAGE_COLORS below.  Used as a golden vector by the test suite.
+# decode to [800, 1600, 2400, 3200, 5000, 22000, 0, 0], the colours match
+# DPI_STAGE_COLORS below and byte 49 is 2 -- the vendor tool's own confirmation
+# flash.  Used as a golden vector by the test suite.
 DPI_VENDOR_DEFAULT = bytes((
     0x04, 0x38, 0x01, 0x00, 0x01, 0x3F, 0x20, 0x20,
     0x12, 0x25, 0x38, 0x4B, 0x75, 0x81, 0x00, 0x00,
@@ -428,6 +470,8 @@ class DpiSettings:
     current_stage: int = 2
     dpi: list = field(default_factory=lambda: [800, 1600, 2400, 3200, 5000, 22000, 0, 0])
     colors: list = field(default_factory=lambda: list(DPI_STAGE_COLORS))
+    #: Byte 49: the one-shot confirmation animation (``DPI_INDICATOR_*``), kept
+    #: verbatim because the vendor's own tool stores 2 and never rewrites it.
     indicator: int = 2
     triple_mask: int = 0x20
     _raw_stages: list | None = field(default=None, repr=False, compare=False)

@@ -151,6 +151,30 @@ def test_set_dpi_reports_the_change_and_writes_one_frame(capsys, fake_mouse):
     assert len(written) == 1 and len(written[0]) == 52
 
 
+def test_set_dpi_re_sends_the_lighting_behind_the_dpi_write(capsys, fake_mouse):
+    """Picking a stage has to hand the LED to report 0x05 (see test_session).
+
+    Report 0x04's byte 49 is a one-shot animation, so the steady colour on the
+    LED only changes when 0x05 follows -- and the CLI hands over report 0x04
+    alone, so the session has to go back for the lighting report.
+    """
+    session, device, _ = fake_mouse
+
+    code, _, _ = run(capsys, "set", "dpi", "--current", "3")
+
+    assert code == 0
+    written = [frame[0] for frame in device.writes if frame[0] != p.RID_READ]
+    assert written == [p.RID_DPI, p.RID_LIGHT]
+
+
+def test_set_dpi_names_what_the_indicator_byte_does(capsys, fake_mouse):
+    """``--indicator`` is byte 49: a confirmation animation, not a stage."""
+    code, out, _ = run(capsys, "set", "dpi", "--indicator", "0")
+
+    assert code == 0
+    assert "confirmation animation: 2 -> 0 (no animation)" in out
+
+
 def test_set_dpi_mentions_the_value_the_sensor_will_store(capsys, fake_mouse):
     """Not every DPI value survives the PAW3311's table."""
     code, out, _ = run(capsys, "set", "dpi", "--stage", "1=12345")
@@ -220,6 +244,36 @@ def test_set_lighting_uses_the_mode_choices(capsys, fake_mouse):
         run(capsys, "set", "lighting", "--mode", "disco")
 
     assert exit_info.value.code == 2
+
+
+def test_set_lighting_writes_the_dpi_stage_colour_mode(capsys, fake_mouse):
+    """``steady-dpi`` is 0x05 -- the mode that lights the LED from report 0x04."""
+    session, device, _ = fake_mouse
+
+    code, out, _ = run(capsys, "set", "lighting", "--mode", "steady-dpi")
+
+    assert code == 0
+    assert "mode: off -> steady-dpi" in out
+    frame = [frame for frame in device.writes if frame[0] == p.RID_LIGHT][-1]
+    assert frame[p.LIGHT_MODE_OFFSET] == 0x50
+
+
+def test_set_lighting_offers_the_dpi_modes_and_no_longer_ripple(capsys, fake_mouse):
+    """``ripple``/``reactive`` were names for modes that never existed."""
+    with pytest.raises(SystemExit) as exit_info:
+        run(capsys, "set", "lighting", "--help")
+
+    assert exit_info.value.code == 0
+    out = capsys.readouterr().out
+    assert "steady-dpi" in out and "breathing-dpi" in out
+    assert "ripple" not in out and "reactive" not in out
+
+
+def test_set_lighting_rejects_the_old_misnomers(capsys, fake_mouse):
+    for name in ("ripple", "reactive"):
+        with pytest.raises(SystemExit) as exit_info:
+            run(capsys, "set", "lighting", "--mode", name)
+        assert exit_info.value.code == 2
 
 
 def test_set_buttons_parses_an_action_spec(capsys, fake_mouse):

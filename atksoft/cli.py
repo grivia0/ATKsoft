@@ -445,12 +445,16 @@ def _set_dpi(args) -> int:
             changes.append(f"stage {stage}: colour {before} -> "
                            f"{format_color(settings.stage_color(stage))}")
         for label, value, attribute in (("current stage", args.current, "current_stage"),
-                                        ("indicator", args.indicator, "indicator"),
                                         ("lift-off distance", args.lift_off, "lift_off_distance")):
             if value is not None:
                 before = getattr(settings, attribute)
                 setattr(settings, attribute, value)
                 changes.append(f"{label}: {before} -> {value}")
+        if args.indicator is not None:
+            before = settings.indicator
+            settings.indicator = args.indicator
+            changes.append(f"confirmation animation: {before} -> {args.indicator} "
+                           f"({p.dpi_indicator_effect(args.indicator)})")
         for label, value, attribute in (("angle snap", args.angle_snap, "angle_snap"),
                                         ("motion sync", args.motion_sync, "motion_sync"),
                                         ("ripple control", args.ripple_control, "ripple_control")):
@@ -804,11 +808,15 @@ def _add_set_commands(sub, common) -> None:
     p_dpi.add_argument("--disable", action="append", type=parse_stage_list, metavar="N[,N]",
                        help="turn stages off")
     p_dpi.add_argument("--color", action="append", metavar="N=RRGGBB",
-                       help="set a stage's LED colour, e.g. --color 1=ff0000")
+                       help="set a stage's LED colour, e.g. --color 1=ff0000 (only the "
+                            "LED modes " + p.DPI_LIGHT_MODES_TEXT + " show it)")
     p_dpi.add_argument("--lift-off", type=int, choices=p.LIFT_OFF_DISTANCES, metavar="N",
                        help="lift-off distance: " + ", ".join(map(str, p.LIFT_OFF_DISTANCES)))
     p_dpi.add_argument("--indicator", type=int, metavar="N",
-                       help="which stage the LED blinks when it changes")
+                       help="byte 49: the LED's one-shot confirmation animation "
+                            "after a DPI write -- 0 none, 1 three quick blinks, "
+                            "2 about three seconds solid, anything else ignored "
+                            "(the vendor stores 2)")
     p_dpi.add_argument("--angle-snap", action=argparse.BooleanOptionalAction, default=None,
                        help="snap movement to the axes")
     p_dpi.add_argument("--motion-sync", action=argparse.BooleanOptionalAction, default=None,
@@ -819,7 +827,9 @@ def _add_set_commands(sub, common) -> None:
 
     p_light = set_sub.add_parser("lighting", parents=[common],
                                  help="LED mode, colour, sleep timers and debounce")
-    p_light.add_argument("--mode", choices=sorted(p.LIGHT_MODES), help="LED effect")
+    p_light.add_argument("--mode", choices=sorted(p.LIGHT_MODES),
+                         help="LED effect (" + p.DPI_LIGHT_MODES_TEXT +
+                              " light the LED in the active DPI stage's colour)")
     p_light.add_argument("--rgb", metavar="RRGGBB", help="LED colour, e.g. ff00aa")
     p_light.add_argument("--brightness", type=int, metavar="N",
                          help="%d..%d (default: %d)" % (p.BRIGHTNESS_MIN, p.BRIGHTNESS_MAX,

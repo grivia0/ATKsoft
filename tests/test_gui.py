@@ -175,10 +175,59 @@ def test_editing_one_dpi_stage_writes_one_frame(build_window):
     assert written.current_stage == before.current_stage
     assert written.active_stages == before.active_stages
     assert written.colors == before.colors
-    # No other report was rewritten.
-    assert all(frame[0] == p.RID_DPI for frame in built.device.writes
-               if frame[0] != p.RID_READ)
+    # The only companion is report 0x05: the re-send that puts the active
+    # stage's colour on the LED (see tests/test_session.py).
+    assert [frame[0] for frame in built.device.writes if frame[0] != p.RID_READ] == \
+        [p.RID_DPI, p.RID_LIGHT]
     assert built.grants, "the write is a read-modify-write, so a grant came first"
+
+
+def test_clicking_a_stage_radio_makes_that_stage_current(build_window):
+    """The *Current* column is how the mouse's DPI stage gets switched.
+
+    Qt moves the check mark on its own, so a radio that nobody watches leaves
+    the tab clean and Save disabled: the click looks like it worked and never
+    reaches the mouse.
+    """
+    built = build_window()
+    window = built.window
+    before = window.state["dpi"]
+
+    window.dpi_panel.active_group.button(4).click()
+
+    assert window.pages["dpi"]._dirty
+    assert window.pages["dpi"].save_button.isEnabled()
+    window.save_page(window.pages["dpi"])
+
+    frames = built.writes_to(p.RID_DPI)
+    assert len(frames) == 1
+    written = p.DpiSettings.from_bytes(padded(p.RID_DPI, frames[0]))
+    assert written.current_stage == 4
+    assert written.current_stage != before.current_stage
+    assert written.dpi == before.dpi                    # nothing else moved
+    assert written.colors == before.colors
+    assert written.active_stages == before.active_stages
+    assert written.lift_off_distance == before.lift_off_distance
+
+
+def test_a_reloaded_current_stage_does_not_dirty_the_dpi_tab(build_window):
+    """Following the mouse's DPI button must not become an unsaved edit.
+
+    Loading a tab whose radio has to move (the device is on another stage now)
+    unchecks the old radio, and that second ``toggled`` would otherwise mark the
+    freshly loaded tab dirty -- with a Save button that writes a stage back to a
+    mouse that is already on it.
+    """
+    built = build_window()
+    window = built.window
+    window.state["dpi"].current_stage = 4
+
+    window.pages["dpi"].load(window.state)
+
+    assert window.dpi_panel.active_group.checkedId() == 4
+    assert not window.pages["dpi"]._dirty
+    assert window.pages["dpi"].status.text() == "matches the mouse"
+    assert not window.pages["dpi"].save_button.isEnabled()
 
 
 def test_an_off_table_dpi_value_is_announced(build_window):
@@ -187,6 +236,76 @@ def test_an_off_table_dpi_value_is_announced(build_window):
     built.window.dpi_panel.dpi_spins[0].setValue(1655)
     note = built.window.dpi_panel.note.text()
     assert "1655" in note and "store" in note
+
+
+def test_the_dpi_tab_says_which_led_modes_use_the_stage_colours(build_window):
+    """A stage colour that "does not change the light" is the firmware working.
+
+    The LED is report 0x05's single colour in every mode but two, so the tab has
+    to point at the modes that do take their colour from the active DPI stage --
+    otherwise editing a colour here looks like it did nothing at all.
+    """
+    built = build_window()
+    window = built.window
+    assert window.lighting_panel.mode_combo.currentText() == "off"
+
+    note = window.dpi_panel.note.text()
+    assert "steady-dpi" in note and "breathing-dpi" in note and "off" in note
+
+    # On one of those modes the colours *are* the LED colour: nothing to say.
+    window.state["lighting"].mode = p.LIGHT_MODES["steady-dpi"]
+    window.pages["dpi"].load(window.state)
+
+    assert window.dpi_panel.note.text() == ""
+
+
+def test_the_indicator_spin_says_what_byte_49_really_is(build_window):
+    """The DPI tab's indicator byte is the confirmation animation, not a stage.
+
+    It used to say the vendor publishes no meaning for the byte; the vendor's own
+    comment on it reads "DPI Active Indicator", so the tooltip has to name the
+    one-shot animation and say outright that it is not a stage number.
+    """
+    built = build_window()
+    spin = built.window.dpi_panel.indicator_spin
+
+    assert "byte 49" in spin.toolTip()
+    assert "confirmation animation" in spin.toolTip()
+    assert "not a stage number" in spin.toolTip()
+    assert spin.value() == p.DPI_INDICATOR_FLASH == 2      # what the vendor stores
+
+
+def test_the_led_hint_points_at_the_confirmation_animation(build_window):
+    """The tab's notice explains the flash instead of promising a colour change."""
+    built = build_window()
+    note = built.window.dpi_panel.note.text()
+
+    assert "confirmation animation" in note
+    assert "blinks the new stage's colour" not in note
+
+
+def test_a_sensor_warning_does_not_swallow_the_led_hint(build_window):
+    """Both notices matter: the snap warning wins, then the hint comes back."""
+    built = build_window()
+    panel = built.window.dpi_panel
+
+    panel.dpi_spins[0].setValue(1655)
+    assert "store" in panel.note.text()
+
+    panel.dpi_spins[0].setValue(1650)          # on the sensor's table again
+    assert "steady-dpi" in panel.note.text()
+
+
+def test_picking_a_dpi_mode_says_the_colour_stops_applying(build_window):
+    """The swatch is dead in the two DPI modes, and the tab says so at once."""
+    built = build_window()
+    panel = built.window.lighting_panel
+    assert panel.note.text() == ""
+
+    panel.mode_combo.setCurrentText("steady-dpi")
+
+    assert "active DPI stage" in panel.note.text()
+    assert built.window.pages["lighting"]._dirty
 
 
 def test_editing_a_button_binding_round_trips(build_window):
@@ -420,6 +539,44 @@ def test_events_stream_into_the_monitor(build_window, event_report):
     assert window.battery_label.text() == "battery 87%"
     window.monitor_panel.clear()
     assert window.monitor_panel.log.toPlainText() == ""
+
+
+def test_the_mouse_dpi_button_moves_the_current_radio(build_window, event_report):
+    """The DPI button moves the stage without the app, and the tab follows it.
+
+    Nothing is written -- the mouse is already on the new stage -- so the tab has
+    to stay clean while the radio and the stored state move with the mouse.
+    """
+    built = build_window()
+    window = built.window
+    assert window.dpi_panel.active_group.checkedId() == 2
+    before = list(built.device.writes)
+
+    built.device.queue.append(event_report(p.MESSAGE_DPI_CYCLE, param1=5))
+    built.link.eventFired.connect(lambda *_: built.link.stop_watch())
+    built.link.watch()                              # inline: returns when stopped
+
+    assert window.dpi_panel.active_group.checkedId() == 5
+    assert window.state["dpi"].current_stage == 5
+    assert not window.pages["dpi"]._dirty
+    assert window.pages["dpi"].status.text() == "matches the mouse"
+    assert not window.pages["dpi"].save_button.isEnabled()
+    assert "stage 5" in window.statusBar().currentMessage()
+    assert list(built.device.writes) == before      # following the mouse is not a write
+
+
+def test_a_dpi_button_stage_the_tab_does_not_have_is_ignored(build_window, event_report):
+    """A stage number no radio carries must not move the selection."""
+    built = build_window()
+    window = built.window
+
+    built.device.queue.append(event_report(p.MESSAGE_DPI_CYCLE, param1=0))
+    built.link.eventFired.connect(lambda *_: built.link.stop_watch())
+    built.link.watch()
+
+    assert window.dpi_panel.active_group.checkedId() == 2
+    assert window.state["dpi"].current_stage == 2
+    assert "stage 0" not in window.statusBar().currentMessage()
 
 
 def test_battery_event_reaches_the_device_tab(build_window, event_report):

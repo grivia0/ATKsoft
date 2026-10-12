@@ -343,7 +343,8 @@ def test_apply_writes_nothing_when_nothing_changed(mouse):
     assert len(device.writes) == before
 
 
-def test_apply_writes_only_the_changed_report(mouse):
+def test_apply_writes_the_changed_report_and_then_the_lighting(mouse):
+    """A DPI write drags report 0x05 along; the tests below say why."""
     session, device = mouse
     state = session.read_settings()
     state["dpi"].set_stage_dpi(1, 400)
@@ -351,11 +352,87 @@ def test_apply_writes_only_the_changed_report(mouse):
 
     results = session.apply(state)
 
-    assert [rid for rid, _ in results] == [p.RID_DPI]
+    assert [rid for rid, _ in results] == [p.RID_DPI, p.RID_LIGHT]
     written = [frame for frame in device.writes[before:] if frame[0] == p.RID_DPI]
     assert len(written) == 1
     assert len(written[0]) == 52
     assert 400 in _decoded_stage_dpis(written[0])
+
+
+def test_a_dpi_write_is_followed_by_report_0x05(mouse):
+    """The LED only moves when 0x05 follows 0x04.
+
+    Report 0x04's byte 49 is a one-shot animation and the steady colour belongs
+    to report 0x05, so a stage change that leaves 0x05's own bytes untouched
+    still has to re-send it -- which is how both vendor drivers write the pair.
+    """
+    session, device = mouse
+    state = session.read_settings()
+    state["dpi"].current_stage = 3
+    before = len(device.writes)
+
+    results = session.apply(state)
+
+    assert [rid for rid, _ in results] == [p.RID_DPI, p.RID_LIGHT]
+    assert [frame[0] for frame in device.writes[before:] if frame[0] != p.RID_READ] == \
+        [p.RID_DPI, p.RID_LIGHT]
+    assert isinstance(results[-1][1], p.LightingSettings)
+
+
+def test_the_lighting_repeat_echoes_what_the_device_holds(mouse):
+    """The repeat is a re-send, not an edit: the frame matches the last read."""
+    session, device = mouse
+    state = session.read_settings()
+    state["dpi"].current_stage = 3
+    before = len(device.writes)
+
+    session.apply(state)
+
+    repeat = [frame for frame in device.writes[before:] if frame[0] == p.RID_LIGHT][-1]
+    assert bytes(repeat) == bytes(session.frame_for(state["lighting"]))
+
+
+def test_the_lighting_repeat_re_reads_when_only_the_dpi_was_handed_over(mouse):
+    """``atksoft set dpi`` and the GUI's DPI tab pass report 0x04 alone."""
+    session, device = mouse
+    settings = session.read_dpi()
+    settings.current_stage = 3
+    before = len(device.writes)
+
+    results = session.apply({"dpi": settings}, keys=["dpi"])
+
+    assert [rid for rid, _ in results] == [p.RID_DPI, p.RID_LIGHT]
+    assert [frame[0] for frame in device.writes[before:] if frame[0] != p.RID_READ] == \
+        [p.RID_DPI, p.RID_LIGHT]
+    assert isinstance(results[-1][1], p.LightingSettings)
+
+
+def test_a_lighting_edit_does_not_drag_the_dpi_report_along(mouse):
+    """The pair only runs one way: only a DPI write needs 0x05 behind it."""
+    session, device = mouse
+    state = session.read_settings()
+    state["lighting"].rgb = (0x11, 0x22, 0x33)
+    before = len(device.writes)
+
+    results = session.apply(state)
+
+    assert [rid for rid, _ in results] == [p.RID_LIGHT]
+    assert [frame[0] for frame in device.writes[before:] if frame[0] != p.RID_READ] == \
+        [p.RID_LIGHT]
+
+
+def test_a_dpi_write_on_an_interface_without_report_0x05(mouse_factory):
+    """A device that exposes 0x04 only still gets its report, and nothing else."""
+    session, device = mouse_factory(features={p.RID_DPI: 51, p.RID_READ: 7})
+    settings = session.read_dpi()
+    settings.current_stage = 3
+    before = len(device.writes)
+
+    results = session.apply({"dpi": settings}, keys=["dpi"])
+
+    assert [rid for rid, _ in results] == [p.RID_DPI]
+    assert [frame[0] for frame in device.writes[before:] if frame[0] != p.RID_READ] == \
+        [p.RID_DPI]
 
 
 def test_apply_can_return_the_fresh_read(mouse):

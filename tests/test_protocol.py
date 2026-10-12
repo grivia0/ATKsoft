@@ -111,3 +111,82 @@ def test_reply_length_echoes_the_declared_length_plus_two():
     assert p.reply_length(PROFILE_FRAME) == p.READ_GRANT_LENGTH[p.RID_PROFILE_SET] + 2
     assert p.reply_length(bytes.fromhex("a0 01 00")) is None   # a status, not a length
     assert p.reply_length(b"") is None
+
+
+# --------------------------------------------------------- the LED mode table
+
+def test_light_modes_are_the_vendor_enum():
+    """0x05/0x06 light the LED from the active DPI stage -- they are not "ripple".
+
+    Both vendor drivers for this family (attack-shark-x11-driver's ``LightMode``
+    enum and mousectl's ``LIGHT_MODES``) agree on the whole table:
+    Off/Static/Breathing/Neon/ColorBreathing/StaticDpi/BreathingDpi.  The last two
+    are the only modes whose colour comes from report 0x04's stages, so naming
+    them something else quietly hides the one setting that keeps the eight stage
+    colours on the LED instead of blinking past them.
+    """
+    assert p.LIGHT_MODES == {
+        "off": 0x00,
+        "steady": 0x01,          # vendor: Static
+        "breathing": 0x02,
+        "neon": 0x03,
+        "rainbow": 0x04,         # vendor: ColorBreathing
+        "steady-dpi": 0x05,      # vendor: StaticDpi
+        "breathing-dpi": 0x06,   # vendor: BreathingDpi
+    }
+    assert p.MODE_BY_VALUE[0x05] == "steady-dpi"
+    assert p.MODE_BY_VALUE[0x06] == "breathing-dpi"
+    assert p.DPI_LIGHT_MODES == frozenset(("steady-dpi", "breathing-dpi"))
+
+
+@pytest.mark.parametrize("name, wire", [("steady-dpi", 0x50), ("breathing-dpi", 0x60)])
+def test_a_dpi_light_mode_is_the_high_nibble_of_byte_three(name, wire):
+    """The mode is the high nibble of byte 3, and survives a rebuild."""
+    built = p.LightingSettings(mode=p.LIGHT_MODES[name]).build()
+
+    assert built[p.LIGHT_MODE_OFFSET] == wire
+    assert p.LightingSettings.from_bytes(built).mode_name == name
+
+
+def test_captured_lighting_frame_came_from_a_dpi_mode():
+    """The dongle's own 0x05 answer carries 0x50 in byte 3: StaticDpi (mode 5)."""
+    settings = p.LightingSettings.from_bytes(LIGHT_FRAME.ljust(p.LIGHT_LENGTH, b"\x00"))
+
+    assert settings.mode_name == "steady-dpi"
+    assert settings.mode == p.LIGHT_MODES["steady-dpi"] == 0x05
+
+
+# ------------------------------------------------ the DPI indicator byte (49)
+
+def test_the_dpi_indicator_byte_is_a_one_shot_animation():
+    """Byte 49 is the vendor's "DPI Active Indicator" -- not a stage number.
+
+    The vendor's own comment on the byte says so, and its reply parser calls the
+    field ``dpiIndicationType``.  Only three values reach the firmware: no
+    animation, three quick blinks, or a few seconds solid.  Reading a stage index
+    into it would have made the "the LED blinks stage N" claim look like protocol
+    instead of folklore.
+    """
+    assert p.DPI_INDICATOR_OFFSET == 49
+    assert p.dpi_indicator_effect(p.DPI_INDICATOR_NONE) == "no animation"
+    assert p.dpi_indicator_effect(p.DPI_INDICATOR_BLINK) == "three quick blinks"
+    assert p.dpi_indicator_effect(p.DPI_INDICATOR_FLASH) == "solid for about three seconds"
+    assert p.dpi_indicator_effect(3) == "ignored by the firmware"
+    assert p.dpi_indicator_effect(0xFF) == "ignored by the firmware"
+
+
+def test_the_vendor_default_frame_carries_the_vendor_flash():
+    """The default report the vendor's builder writes stores 2 in byte 49."""
+    settings = p.DpiSettings.from_bytes(p.DPI_VENDOR_DEFAULT)
+
+    assert p.DPI_VENDOR_DEFAULT[p.DPI_INDICATOR_OFFSET] == p.DPI_INDICATOR_FLASH == 2
+    assert settings.indicator == p.DPI_INDICATOR_FLASH
+
+
+@pytest.mark.parametrize("value", [0, 1, 2, 9, 0xFF])
+def test_the_dpi_indicator_byte_survives_a_rebuild(value):
+    """ATKsoft keeps byte 49 verbatim: whatever the mouse holds goes back."""
+    settings = p.DpiSettings(indicator=value)
+
+    assert settings.build()[p.DPI_INDICATOR_OFFSET] == value
+    assert p.DpiSettings.from_bytes(settings.build()).indicator == value

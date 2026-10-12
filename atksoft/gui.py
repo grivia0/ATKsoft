@@ -525,6 +525,15 @@ class DpiPanel(SettingsPanel):
     def build(self) -> None:
         table = QTableWidget(p.MAX_DPI_STAGES, 4, self)
         table.setHorizontalHeaderLabels(["Current", "On", "DPI", "Colour"])
+        # These colours are not what lights the LED in most modes, and saying
+        # nothing about that reads as a broken tab: name the modes that do use
+        # them (protocol.DPI_LIGHT_MODES) where they are edited.
+        table.horizontalHeaderItem(3).setToolTip(
+            "the colour the LED shows while the mouse is on a stage, in the LED "
+            f"modes {p.DPI_LIGHT_MODES_TEXT}")
+        #: the notice load() puts under the table, kept so that a DPI-snap
+        #: warning can be shown without losing it
+        self._hint = ""
         table.verticalHeader().setVisible(False)
         table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -537,7 +546,12 @@ class DpiPanel(SettingsPanel):
         for index in range(p.MAX_DPI_STAGES):
             stage = index + 1
             radio = QRadioButton(table)
-            radio.setToolTip(f"the mouse powers up on stage {stage}")
+            radio.setToolTip(f"make stage {stage} the stage the mouse is on -- "
+                             f"the DPI button cycles its stages from there")
+            # Qt moves the check mark by itself, so without this connection a
+            # click on the radio would look like it worked and never reach the
+            # mouse: no edit, no dirty tab, no enabled Save.
+            self._watch(radio, "toggled")
             self.active_group.addButton(radio, stage)
             table.setCellWidget(index, 0, radio)
             box = QCheckBox(table)
@@ -552,6 +566,9 @@ class DpiPanel(SettingsPanel):
                 lambda value, number=stage: self._snapped(number, value))
             table.setCellWidget(index, 2, spin)
             button = ColorButton(p.DPI_STAGE_COLORS[index], table)
+            button.setToolTip(f"stage {stage}: the colour the LED shows while the "
+                              f"mouse is on stage {stage} (LED modes "
+                              f"{p.DPI_LIGHT_MODES_TEXT})")
             button.colorChanged.connect(lambda *_: self.changed.emit())
             table.setCellWidget(index, 3, button)
             self.enable_boxes.append(box)
@@ -570,8 +587,11 @@ class DpiPanel(SettingsPanel):
         self.indicator_spin = QSpinBox(sensor)
         self.indicator_spin.setRange(0, 0xFF)
         self.indicator_spin.setPrefix("indicator ")
-        self.indicator_spin.setToolTip("the DPI indicator byte, kept verbatim: "
-                                       "the vendor publishes no meaning for it")
+        self.indicator_spin.setToolTip(
+            "report 0x04 byte 49, kept verbatim: the LED's one-shot confirmation "
+            "animation after a DPI write (0 none, 1 three quick blinks, 2 about "
+            "three seconds solid, anything else ignored).  It is not a stage "
+            "number -- the steady colour comes from Lighting's mode")
         for widget, signal in ((self.lift_combo, "currentIndexChanged"),
                                (self.angle_box, "toggled"),
                                (self.motion_box, "toggled"),
@@ -587,15 +607,52 @@ class DpiPanel(SettingsPanel):
     def _snapped(self, stage: int, value: int) -> None:
         """Say what the PAW3311 will really store, when that differs."""
         stored = p.bytes_to_dpi(*p.dpi_to_bytes(value))
-        self._say("" if stored == value else
-                  f"stage {stage}: {value} dpi is not on the sensor's table -- "
-                  f"the mouse will store {stored} dpi")
+        warning = (f"stage {stage}: {value} dpi is not on the sensor's table -- "
+                   f"the mouse will store {stored} dpi")
+        self._say(warning if stored != value else self._hint)
         self.changed.emit()
+
+    @staticmethod
+    def _led_hint(lighting) -> str:
+        """Why the stage colours may not be reaching the LED right now.
+
+        Report 0x05 owns the LED's colour, and only two of its modes take that
+        colour from the stage the mouse is on.  Anywhere else the LED keeps its
+        own colour and a DPI change only plays report 0x04's one-shot
+        confirmation animation, which makes a DPI change look like it changed
+        nothing at all.
+        """
+        if lighting is None or lighting.mode_name in p.DPI_LIGHT_MODES:
+            return ""
+        return (f"the LED stays on these colours only while Lighting's mode is "
+                f"{p.DPI_LIGHT_MODES_TEXT} -- in {lighting.mode_name} the LED keeps "
+                f"its own colour and a DPI change only plays the confirmation "
+                f"animation")
+
+    def show_current_stage(self, stage: int) -> bool:
+        """Move the *Current* radio to ``stage`` without calling it an edit.
+
+        The mouse's own DPI button announces where it landed, and that is device
+        truth arriving unasked -- the mouse is already on the new stage, so there
+        is nothing to save and the tab has to stay clean.  Returns whether the
+        radio actually moved.
+        """
+        try:
+            button = self.active_group.button(int(stage))
+        except (TypeError, ValueError):
+            return False
+        if button is None or button.isChecked():
+            return False
+        # Quiet across the whole group: checking one button unchecks the old one,
+        # and that second ``toggled`` would otherwise look like an edit too.
+        with _quiet(*self.active_group.buttons()):
+            button.setChecked(True)
+        return True
 
     def _widgets(self) -> tuple:
         return (self.lift_combo, self.angle_box, self.motion_box, self.ripple_box,
                 self.indicator_spin, *self.enable_boxes, *self.dpi_spins,
-                *self.colors)
+                *self.colors, *self.active_group.buttons())
 
     def load(self, state: dict) -> None:
         settings = state.get("dpi")
@@ -619,6 +676,8 @@ class DpiPanel(SettingsPanel):
             self.motion_box.setChecked(bool(settings.motion_sync))
             self.ripple_box.setChecked(bool(settings.ripple_control))
             self.indicator_spin.setValue(int(settings.indicator))
+        self._hint = self._led_hint(state.get("lighting"))
+        self._say(self._hint)
 
     def collect(self, state: dict) -> list:
         settings = state["dpi"]
@@ -650,6 +709,9 @@ class LightingPanel(SettingsPanel):
         for name in p.LIGHT_MODES:
             self.mode_combo.addItem(name, p.LIGHT_MODES[name])
         self.color_button = ColorButton((0x00, 0xFF, 0x00), led)
+        self.color_button.setToolTip(
+            f"the LED's colour, except in the LED modes {p.DPI_LIGHT_MODES_TEXT}, "
+            f"which light the LED in the active DPI stage's colour instead")
         self.brightness_slider = QSlider(Qt.Orientation.Horizontal, led)
         self.brightness_slider.setRange(p.BRIGHTNESS_MIN, p.BRIGHTNESS_MAX)
         self.speed_slider = QSlider(Qt.Orientation.Horizontal, led)
@@ -688,7 +750,18 @@ class LightingPanel(SettingsPanel):
                                (self.deep_spin, "valueChanged"),
                                (self.debounce_combo, "currentIndexChanged")):
             self._watch(widget, signal)
+        # Picking one of the two DPI modes makes the swatch above stop applying,
+        # and the tab should say so as soon as it is picked.
+        self.mode_combo.currentIndexChanged.connect(
+            lambda *_: self._say(self._mode_note()))
         self.color_button.colorChanged.connect(lambda *_: self.changed.emit())
+
+    def _mode_note(self) -> str:
+        """Say so when the chosen mode ignores the colour above it."""
+        if self.mode_combo.currentText() not in p.DPI_LIGHT_MODES:
+            return ""
+        return ("in this mode the LED is lit in the active DPI stage's colour, so "
+                "the colour above does not apply")
 
     def _widgets(self) -> tuple:
         return (self.mode_combo, self.sleep_combo, self.debounce_combo,
@@ -717,6 +790,8 @@ class LightingPanel(SettingsPanel):
                 self._say(f"the mouse reports light mode {settings.mode:#04x}, which "
                           f"the vendor's writer does not define; it is kept as-is "
                           f"unless you pick another one")
+            else:
+                self._say(self._mode_note())
 
     def collect(self, state: dict) -> list:
         settings = state["lighting"]
@@ -1614,11 +1689,34 @@ class MainWindow(QMainWindow):
         self.monitor_panel.note_event(event)
         if event.get("event") == "battery":
             self.battery_label.setText(f"battery {event.get('percent')}%")
+        if event.get("event") == "dpi-cycle":
+            self._follow_dpi_button(event.get("stage"))
         if event.get("event") == "profile-changed":
             # A physical button moved the live profile out from under the tabs.
             self.statusBar().showMessage(
                 f"the mouse switched to profile {event.get('profile')} -- reload to "
                 f"see it")
+
+    def _follow_dpi_button(self, stage) -> None:
+        """Move the DPI tab's *Current* radio to the stage the mouse landed on.
+
+        The mouse's DPI button moves the stage without the app ever being asked,
+        so the radio has to follow it or the tab goes on describing a stage the
+        mouse is no longer on.  Only the radio moves: the mouse is already there,
+        so nothing is written and the tab still says "matches the mouse".
+        """
+        try:
+            stage = int(stage)
+        except (TypeError, ValueError):
+            return
+        if not self.dpi_panel.show_current_stage(stage):
+            return
+        settings = self.state.get("dpi")
+        if settings is not None:
+            settings.current_stage = stage
+        self.statusBar().showMessage(
+            f"the mouse's DPI button chose stage {stage} -- the DPI tab is showing "
+            f"it, nothing was written")
 
     def _on_battery(self, event) -> None:
         self.device_panel.show_battery(event)

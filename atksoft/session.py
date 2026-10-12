@@ -495,6 +495,11 @@ class MouseSession:
         the user changed.  With ``verify`` (the default) each written report is
         read back and returned alongside its report id, because the firmware
         normalises some fields rather than storing bytes verbatim.
+
+        Report 0x05 is the one exception to "only what changed": it follows every
+        DPI write, because report 0x04 only *flashes* the LED (byte 49) and hands
+        it straight back to 0x05, which owns the steady colour.  See
+        :meth:`_repeat_lighting`.
         """
         writers = {
             "dpi": self.write_dpi,
@@ -504,6 +509,7 @@ class MouseSession:
             "profile": self.write_profile_settings,
         }
         results = []
+        written = set()
         for key, rid in self.SETTINGS_REPORTS:
             report = state.get(key)
             if report is None or (keys is not None and key not in keys):
@@ -512,6 +518,7 @@ class MouseSession:
                     _same_frame(self.frame_for(report), self.snapshot[rid]):
                 continue
             writers[key](report)
+            written.add(rid)
             fresh = None
             if verify:
                 try:
@@ -519,7 +526,38 @@ class MouseSession:
                 except (SessionError, p.ProtocolError):
                     fresh = None
             results.append((rid, fresh))
+        if p.RID_DPI in written and p.RID_LIGHT not in written and self.supports(p.RID_LIGHT):
+            # The caller asked for lighting but the bytes matched, so it was
+            # skipped above; echoing it back is still the point of the repeat.
+            lighting = state.get("lighting") if (keys is None or "lighting" in keys) else None
+            results.append(self._repeat_lighting(lighting, verify))
         return results
+
+    def _repeat_lighting(self, settings, verify: bool):
+        """Send report 0x05 again after a DPI write so the LED re-renders.
+
+        Report 0x04 carries the stage colours and the active stage, but its byte
+        49 is a one-shot animation: the firmware plays it and then returns the
+        LED to whatever report 0x05 last asked for.  Writing 0x04 alone therefore
+        leaves the LED on the colour of the stage it was already showing, which is
+        what a changed active stage (or a changed stage colour) looks like it did
+        nothing -- and why both vendor drivers write the two reports as a pair, in
+        this order, on every apply.
+
+        ``settings`` is the lighting report the caller handed over, and is re-read
+        from the device when the caller only passed the DPI report (that is what
+        ``atksoft set dpi`` and the GUI's DPI tab do).
+        """
+        if settings is None:
+            settings = self.read_lighting()
+        self.write_lighting(settings)
+        fresh = None
+        if verify:
+            try:
+                fresh = self.read_lighting()
+            except (SessionError, p.ProtocolError):
+                fresh = None
+        return (p.RID_LIGHT, fresh)
 
     # -- interrupt-IN events ---------------------------------------------
 
