@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,11 +8,36 @@ version = "0.1.0"
 description = "Open control panel for Attack Shark mice (PAW3311 sensor, 2.4 GHz dongle)"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "grivia0", email = "humbatnagi082004@gmail.com" }]
+keywords = ["attack-shark", "mouse", "gaming-mouse", "hidraw", "hid", "linux", "paw3311"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Hardware",
+    "Topic :: Utilities",
+]
 # The CLI plus the protocol/session layers are pure stdlib; only the GUI needs Qt.
 dependencies = []
 
 [project.optional-dependencies]
 gui = ["PyQt6>=6.5"]
+dev = ["pytest>=7", "PyQt6>=6.5"]
+
+[project.urls]
+Homepage = "https://github.com/grivia0/ATKsoft"
+Repository = "https://github.com/grivia0/ATKsoft"
+Issues = "https://github.com/grivia0/ATKsoft/issues"
+Changelog = "https://github.com/grivia0/ATKsoft/commits/main"
 
 [project.scripts]
 atksoft = "atksoft.cli:main"

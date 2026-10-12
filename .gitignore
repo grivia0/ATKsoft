@@ -1,15 +1,36 @@
 # Python build/byte-code artefacts
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
 *.egg-info/
+.eggs/
 build/
 dist/
+wheels/
 
 # Test and tooling caches
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
 .coverage
+.coverage.*
 htmlcov/
 
 # Virtualenvs
 .venv/
 venv/
+env/
+
+# Editors and OS noise
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Scratch output from poking at the mouse
+*.hidraw
+*.bin
+*.log
